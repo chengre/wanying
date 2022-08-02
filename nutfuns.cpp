@@ -142,7 +142,7 @@ RotatedRect Cutter::find_nut_rectangle(const std::vector<Point2i>& cnt, int dwid
 
 	double pi = 2 * cos(0.0);
 	double angle = (atan2(vech[1], vech[0]) * 180 / pi);
-	return RotatedRect((Point2f)pcenter, Size2f((float)width, (float)height), (float)angle);
+	return RotatedRect((Point2f)pcenter, Size2f((float)width, (float)height), 90 - (float)angle);
 }
 
 
@@ -277,6 +277,46 @@ void Cutter::sort_contours_by_area(std::vector <std::vector<Point2i>>& cnts)
 			cnts[kd] = cnti;
 		}
 		if (id > 5) { break; } // only find the top 5 maximum area.
+	}
+}
+
+
+
+void Cutter::sort_contours_by_length(std::vector <std::vector<Point2i>>& cnts)
+{
+	// sort contours, with the longest first, and the shortest the last.
+	// usually used for sorting possible branches, the longest one maybe a branch
+	//
+
+	std::vector<double> maxlens;
+
+	for (int id = 0; id < (int)cnts.size(); id++)
+	{
+		int idx[4] = {};
+		find_the_left_right_points(cnts[id], idx);
+		double maxlen = max(norm(cnts[id][idx[1]] - cnts[id][idx[0]]), norm(cnts[id][idx[3]] - cnts[id][idx[2]]));
+
+		maxlens.push_back(maxlen);
+	}
+
+	for (int id = 0; id < (int)cnts.size() - 1; id++)
+	{
+		int kd = id;
+		for (int jd = id + 1; jd < (int)cnts.size(); jd++)
+		{
+			if (maxlens[kd] < maxlens[jd]) { kd = jd; }
+		}
+		if (kd > id)
+		{
+			std::vector<Point2i> cnti = cnts[id];
+			cnts[id] = cnts[kd];
+			cnts[kd] = cnti;
+
+			double maxlen = maxlens[id];
+			maxlens[id] = maxlens[kd];
+			maxlens[kd] = maxlen;
+		}
+		if (id > 4) { break; } // only find the top 5 longest contours.
 	}
 }
 
@@ -677,8 +717,9 @@ void Cutter::trim_branch_and_find_head(Mat1b& srx, int branchwidththresh, int br
 	
 	std::vector<std::vector<Point2i>> cntz; // cntz are trimed parts from nut, it possibly contains branches.
 	findContours(srz, cntz, RETR_LIST, CHAIN_APPROX_NONE);
-	sort_contours_by_area(cntz); // sort the trimed contours, the larger the closer to first, so the branches might be the first.
-	
+	//sort_contours_by_area(cntz); // sort the trimed contours, the larger the closer to first, so the branches might be the first.
+	sort_contours_by_length(cntz);
+
 	// if all the possible branches are trimed, then the head and tail may also be trimed unexpectedly.
 	// headside < 0: head is left; > 0: head is right; == 0: unknown.
 	headside = 0;
@@ -695,11 +736,10 @@ void Cutter::trim_branch_and_find_head(Mat1b& srx, int branchwidththresh, int br
 		find_the_left_right_points(cntz[0], idz);
 		int xz = (cntz[0][idz[0]].x + cntz[0][idz[1]].x) / 2;
 
-		int dw = cntz[0][idz[1]].x - cntz[0][idz[0]].x;
-		int dh = cntz[0][idz[3]].y - cntz[0][idz[2]].y;
+		double maxlen = max(norm(cntz[0][idz[1]] - cntz[0][idz[0]]), norm(cntz[0][idz[3]] - cntz[0][idz[2]]));
 
 		// remove a branch if it is longer or higher than the predefined branch length thresh
-		if (dw > branchlengththresh || dh > branchlengththresh)
+		if (maxlen > branchlengththresh)
 		{
 			// remove branch from the orignal image.
 			drawContours(srx, cntz, 0, Scalar(0), CV_FILLED);
@@ -711,6 +751,117 @@ void Cutter::trim_branch_and_find_head(Mat1b& srx, int branchwidththresh, int br
 	// find the nut contours, all possible branches have been removed from the image.
 	cnts.clear();
 	find_valid_nut_contours(srx, cnts);
+}
+
+
+
+void Cutter::find_flower_and_find_head(Mat1b& srx, int flowerwidththresh, int flowerheightthresh, double mblankscale, double mwidthscale, int& headside, int& floweroffset)
+{
+	// flowers will not be trimed, actually, nothing will be trimed.
+	// triming branch would be used before this command.
+	// output: floweroffset: unit(pixel), from the center of cpt to flower, is always positive, no matter flower is at left or right of nut.
+	//		   when no flower exist, flowerdist = 1000 by default.
+	//
+	std::vector<std::vector<Point2i>> cnts;
+	if (!find_valid_nut_contours(srx, cnts)) { return; }
+
+	// the most left and right points will be found.
+	std::vector<Point2i> cnt = cnts[0]; // trimed contour.
+	int idx[4] = {};
+	find_the_left_right_points(cnt, idx);
+
+	// flowers exist in [pt1.x + x1, pt1.x + x2] and [pt2.x - x2, pt2.x - x1] regions.
+	int nutwidth = cnt[idx[1]].x - cnt[idx[0]].x, xc = (cnt[idx[0]].x + cnt[idx[1]].x) / 2;
+	int mblank = (int)(nutwidth * mblankscale), mwidth = (int)(nutwidth * mwidthscale);
+	
+	Mat1b srz = Mat1b::zeros(srx.size());
+	int width = srx.cols, height = srx.rows;
+
+	for (int jd = (int)cnt[idx[2]].y; jd < (int)cnt[idx[3]].y; jd++)
+	{
+		for (int id = (int)cnt[idx[0]].x + mblank + mwidth; id > (int)cnt[idx[0]].x + mblank; id--)
+		{
+			if (id - flowerwidththresh > 0)
+			{
+				if (srx.at<uchar>(jd, id) == 255 && srx.at<uchar>(jd, id + 1) == 0)
+				{
+					for (int kd = flowerwidththresh; kd > 0; kd--)
+					{
+						if (srx.at<uchar>(jd, id - kd) == 0)
+						{
+							for (int hd = 0; hd < kd; hd++)
+							{
+								srz.at<uchar>(jd, id - hd) = srx.at<uchar>(jd, id - hd);
+							}
+						}
+						break;
+					}
+				}
+			}
+		}
+
+		for (int id = (int)cnt[idx[1]].x - mblank - mwidth; id < (int)cnt[idx[1]].x - mblank; id++)
+		{
+			if (id + flowerwidththresh < width)
+			{
+				if (srx.at<uchar>(jd, id) == 255 && srx.at<uchar>(jd, id - 1) == 0)
+				{
+					for (int kd = flowerwidththresh; kd > 0; kd--)
+					{
+						if (srx.at<uchar>(jd, id + kd) == 0)
+						{
+							for (int hd = 0; hd < kd; hd++)
+							{
+								srz.at<uchar>(jd, id + hd) = srx.at<uchar>(jd, id + hd);
+							}
+						}
+						break;
+					}
+				}
+			}
+		}
+	}
+	
+	std::vector<std::vector<Point2i>> cntz; // cntz are trimed parts from nut, it possibly contains branches.
+	findContours(srz, cntz, RETR_LIST, CHAIN_APPROX_NONE);
+	sort_contours_by_area(cntz); // sort the trimed contours, the larger the closer to first, so the branches might be the first.
+
+	// headside < 0: head is left; > 0: head is right; == 0: unknown.
+	headside = 0; floweroffset = 1000; // floweroffset is initialized to a value a normal nut flower can never reach.
+
+	if ((int)cntz.size() > 0)
+	{
+		// find the center of the nut
+		int idx[4] = {};
+		find_the_left_right_points(cnts[0], idx);
+		int xc = (cnts[0][idx[0]].x + cnts[0][idx[1]].x) / 2;
+
+		// find the center of the flower
+		int idz[4] = {};
+		find_the_left_right_points(cntz[0], idz);
+		int xz = (cntz[0][idz[0]].x + cntz[0][idz[1]].x) / 2;
+
+		int dy = cntz[0][idz[3]].y - cntz[0][idz[2]].y;
+
+		// if the flower height is larger than the threshold, we take it as a flower.
+		if (dy > flowerheightthresh)
+		{
+			// check which side is the head.
+			headside = (xz > xc ? -1 : +1);
+
+			// to get a line, through the center of hpt and fpt, verticle to the line from hpt to fpt
+			Point2i hpt = (headside < 0 ? cnt[idx[0]] : cnt[idx[1]]);
+			Point2i fpt = (headside < 0 ? cnt[idx[1]] : cnt[idx[0]]);
+
+			int dx = hpt.x - fpt.x, dy = hpt.y - fpt.y;
+			Point2i cpt = (Point2i)((hpt + fpt) * 0.5);
+			Point2i cpv = cpt + Point2i(dy, -dx);
+
+			Point2i flower = (headside < 0 ? cntz[0][idz[0]] : cntz[0][idz[1]]); // the inner point of the flower contour
+			floweroffset = (int)distance_from_point_to_line(flower, cpt, cpv); // floweroffset is always positive.
+		}
+	}
+
 }
 
 
@@ -817,27 +968,31 @@ bool Cutter::Detect2(Bitmap^ bgrImage)
 		failureCode = 1;
 		return false;
 	}
-
+	
 	// 1. is nut lying between jig?
 	cv::Rect rect = boundingRect(Mat(cnt));
 	topY = rect.tl().y;
 	btmY = rect.br().y;
-
-	Point2i fp1, fp2;
-	Point2i center = FindCenter(cnt, fp1, fp2);
-	Center = ToPoint(center);
 
 	if (topY<=JigTopY || btmY>=JigBtmY)
 	{
 		failureCode = 4;
 		return false;
 	}
+	
+	//Point2i fp1, fp2;
+	//Point2i center = FindCenter(cnt, fp1, fp2);
+	//Center = ToPoint(center);
 
 	// 2. finding head with 3 methods, and triming the branches.
 	int headsides[] = { 0,0,0 };
 	int floweroffset = 0;
 	find_head_by_cluster_method(binMat, headsides[0]); 
-	trim_branch_and_find_head(binMat, branchwidththresh, branchlengththresh, headsides[1]);
+	trim_branch_and_find_head(binMat, branchwidththresh, branchlengththresh, headsides[1]); // if branch exists, it has been removed, thus the contour should be updated.
+
+	std::vector<std::vector<Point2i>> cntz;
+	find_valid_nut_contours(binMat, cntz);
+	cnt = cntz[0]; // cnt has been updated.
 	find_head_by_flower_neck(cnt, flowerheightthresh, mblankscale, mwidthscale, headsides[2], floweroffset);
 
 	headside = headsides[0]; // headside is a public variable.
@@ -850,21 +1005,21 @@ bool Cutter::Detect2(Bitmap^ bgrImage)
 	head = (headside < 0 ? ct1 : ct2);
 	foot = (headside < 0 ? ct2 : ct1);
 
-	/////////////////////////////////////////////
+	// 4. finding rectangle
+	RotatedRect rRect = find_nut_rectangle(cnt, 20); // this command should wait until cnt has been updated.
+
+	RectPnts = RectForShow(rRect); // show rectangle
+
+	//=============================================
 	Head = ToPoint(head);
+	Center = ToPoint(rRect.center);
 	Contour = ContourForShow(cnt);
-	/////////////////////////////////////////////
+	//=============================================
 
-	Point2i ct = ct2 - ct1;
-	double dl = norm(ct);
-	double vech[2] = { ct.x / dl,ct.y / dl };
-	RotatedRect rRect = find_nut_rectangle(cnt, 20);
-	// end of finding.
-
-
-	RectPnts = RectForShow(rRect);
+	// 5. checking moon
 	length = max(rRect.size.width, rRect.size.height)*dimPerPix;
 	height = min(rRect.size.width, rRect.size.height)*dimPerPix;
+
 	//moon = FindMoon(cnt, head, foot);
 	double moonx = 0;
 	get_nut_bending_tendency(cnt, headside, moonx);
@@ -887,78 +1042,53 @@ bool Cutter::Detect2(Bitmap^ bgrImage)
 
 
 
-/*
 bool Cutter::Detect4(Bitmap^ bgrImage1, Bitmap^ bgrImage2)
 {
-	vector<Point2i> contour1, contour2, contour;
-	Mat1b m1 = BgrBmp2GrayMat(bgrImage1), m2 = BgrBmp2GrayMat(bgrImage2);
-	if (!FindContour(m1, false, contour1) || !FindContour(m2, false, contour2))
-	{
-		failureCode = 1;
-		return false;
-	}
-	// trim contours with width offset, 6.16
-	//trim_contour_with_offset(contour1, 10);
-	//trim_contour_with_offset(contour2, 10);
-	// trim end
 
-	cv::Rect rect1 = boundingRect(Mat(contour1));
-	cv::Rect rect2 = boundingRect(Mat(contour2));
-	double l1 = max(rect1.width, rect1.height);
-	double l2 = max(rect2.width, rect2.height);
-	if (l1/l2<0.75 || l2/l1<0.75)
+	// the first process when the whole body of nut has came into sight.
+	Mat1b src = BgrBmp2GrayMat(bgrImage2);
+
+	std::vector<Point2i> cnt;
+
+	if (!receive_image_find_nut_contour(src, 1, (int)(grayThresh), cnt, src))
 	{
 		failureCode = 1;
 		return false;
 	}
 
-	Mat1b binMat;
-	match = Match(m1.size(), contour1, contour2, contour, binMat);
-	if (match<matchThresh)
-	{
-		failureCode = 6;
-		return false;
-	}
+	// 2. finding head with 3 methods, and triming the branches.
+	int headsides[] = { 0,0,0 };
+	
+	find_head_by_cluster_method(src, headsides[0]);
+	trim_branch_and_find_head(src, branchwidththresh, branchlengththresh, headsides[1]); // if branch exists, it has been removed, thus the contour should be updated.
 
-	Point2i fp1, fp2;
-	Point2i center = FindCenter(contour, fp1, fp2);
-	Center = ToPoint(center);
+	std::vector<std::vector<Point2i>> cntz;
+	find_valid_nut_contours(src, cntz);
+	cnt = cntz[0]; // cnt has been updated.
+	int floweroffset = 0;
+	find_head_by_flower_neck(cnt, flowerheightthresh, mblankscale, mwidthscale, headsides[2], floweroffset);
 
-	// find head and foot with trimed contour
-	std::vector<Point2i> contourx = contour;
-	trim_contour_with_offset(contourx, 12);
-	Point2i head, foot;
-	//if (!FindHead(binMat, contour, boundingRect(Mat(contour)), fp1, fp2, head))
-	if (!FindHead(binMat, contourx, head, foot))
-	{
-		failureCode = 2;
-		return false;
-	}
+	headside = headsides[0]; // headside is a public variable.
+	if (headsides[1] != 0) { headside = headsides[1]; }
+	if (headsides[2] != 0) { headside = headsides[2]; }
+
+	// 3. finding head and foot points
+	Point2i ct1, ct2, head, foot;
+	find_the_left_right_centers(cnt, ct1, ct2);
+	head = (headside < 0 ? ct1 : ct2);
+	foot = (headside < 0 ? ct2 : ct1);
+
+	// 4. finding rectangle
+	RotatedRect rRect = find_nut_rectangle(cnt, 20); // this command should wait until cnt has been updated.
+
+	RectPnts = RectForShow(rRect); // show rectangle
+
+	//=============================================
 	Head = ToPoint(head);
-	/////////////////////////////////////////////
-	//FixContour(binMat, contour, head);
+	Center = ToPoint(rRect.center);
+	Contour = ContourForShow(cnt);
+	//=============================================
 
-	Contour = ContourForShow(contourx);
-	/////////////////////////////////////////////
-	//Point2i foot;
-	//RotatedRect rRect = FindRect(contour, head, foot);
-
-	// finding the foot point. by chen
-	//FindFoot(contour, head, foot); // finding the foot point by choosing the farest point to the head point.
-
-	// finding the rectangle of the nut with offset. by chen
-	//Point2f keypoints[2];
-	//find_key_points_with_offset(contour, keypoints, 20);
-	//RotatedRect rRect = FindRect(contour, keypoints, 30);
-	Point2i ct1, ct2;
-	find_the_left_right_centers(contour, ct1, ct2);
-	Point2i ct = ct2 - ct1;
-	double dl = norm(ct);
-	double vech[2] = { ct.x / dl,ct.y / dl };
-	RotatedRect rRect = find_nut_rectangle(contour, vech);
-	// end of finding.
-
-	RectPnts = RectForShow(rRect);
 	length = max(rRect.size.width, rRect.size.height)*dimPerPix;
 	height = min(rRect.size.width, rRect.size.height)*dimPerPix;
 	if (length>overMaxLength || height<overMinHeight)
@@ -967,7 +1097,7 @@ bool Cutter::Detect4(Bitmap^ bgrImage1, Bitmap^ bgrImage2)
 		return false;
 	}
 
-	if ((height<boundHeight && length<boundLength ? OneCut(contour, head, foot, CutDatas) : TwoCut(contour, head, foot, CutDatas)) && Check(m2))
+	if ((height<boundHeight && length<boundLength ? OneCut(cnt, head, foot, CutDatas) : TwoCut(cnt, head, foot, CutDatas)))
 	{
 		failureCode = 0;
 		return true;
@@ -978,5 +1108,3 @@ bool Cutter::Detect4(Bitmap^ bgrImage1, Bitmap^ bgrImage2)
 		return false;
 	}
 }
-*/
-

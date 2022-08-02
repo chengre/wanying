@@ -375,6 +375,7 @@ namespace ImageProc
 
 		int branchwidththresh;
 		int branchlengththresh;
+		int flowerwidththresh;
 		int flowerheightthresh;
 		double mblankscale;
 		double mwidthscale;
@@ -382,8 +383,8 @@ namespace ImageProc
 		int fThresh;
 
 		int headside; // headside = -1: head is left; headside = +1: head is right; 
-		int sideoffset; // the side offset around the most left/right points to obtain two shoulder points for each, the two center points from left to right can be derived to get the nut direction.
-		int rectoffset; // the side offset for the new 
+		//int sideoffset; // the side offset around the most left/right points to obtain two shoulder points for each, the two center points from left to right can be derived to get the nut direction.
+		//int rectoffset; // the side offset for the new 
 
 
 		/////////////////////Êä³ö
@@ -435,6 +436,7 @@ namespace ImageProc
 		//double norm_point(Point2i pt);
 
 		void sort_contours_by_area(std::vector <std::vector<Point2i>>& cnts);
+		void sort_contours_by_length(std::vector <std::vector<Point2i>>& cnts);
 		double distance_from_point_to_line(Point2i pt, Point2i pt1, Point2i pt2);
 		void get_nut_bending_tendency(std::vector<Point2i>& cnt, int headside, double& indicator);
 
@@ -454,9 +456,11 @@ namespace ImageProc
 
 		void find_head_by_cluster_method(Mat1b& srx, int& headside);
 		void trim_branch_and_find_head(Mat1b& srx, int branchwidththresh, int branchlengththresh, int& headside);
+		void find_flower_and_find_head(Mat1b& srx, int flowerwidththresh, int flowerheightthresh, double mblankscale, double mwidthscale, int& headside, int& floweroffset);
 		void find_head_by_flower_neck(std::vector<Point2i>& cnt, int flowerheightthresh, double mblankscale, double mwidthscale, int& headside, int& floweroffset);
 
 		bool Detect2(Bitmap^ bgrImage);
+		bool Detect4(Bitmap^ bgrImage1, Bitmap^ bgrImage2);
 		// end of declaration.
 
 		bool Detect1(Bitmap^ bgrImage)
@@ -653,7 +657,7 @@ namespace ImageProc
 		}
 
 
-		
+		/*
 		bool Detect4(Bitmap^ bgrImage1, Bitmap^ bgrImage2)
 		{
 			vector<Point2i> contour1, contour2, contour;
@@ -744,7 +748,7 @@ namespace ImageProc
 				return false;
 			}
 		}
-
+		*/
 
 
 		/////////////////////////////////////////////////////////////////
